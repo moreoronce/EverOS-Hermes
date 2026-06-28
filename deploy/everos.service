@@ -1,0 +1,14 @@
+[Unit]
+Description=EverOS memory sidecar (shared by Hermes + Codex)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/home/<username>/.local/bin/everos-codex-server
+Restart=on-failure
+RestartSec=5
+Environment=HOME=/home/<username>
+Environment=PATH=/home/<username>/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target

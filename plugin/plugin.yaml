@@ -1,0 +1,5 @@
+name: everos-local
+version: 1.0.0
+description: "EverOS local-first memory provider for Hermes Agent using the WSL EverOS sidecar."
+pip_dependencies:
+  - httpx

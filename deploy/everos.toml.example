@@ -1,0 +1,29 @@
+# EverOS server configuration template
+# Copy to ~/.everos-codex/everos.toml and fill in your API keys.
+# DO NOT commit this file with real keys.
+
+[api]
+host = "127.0.0.1"
+port = 8765
+
+[memory]
+timezone = "Asia/Shanghai"
+
+# ── LLM (memory extraction) ──
+[llm]
+model = "deepseek-ai/DeepSeek-V4-Flash"
+api_key = "<your-llm-api-key>"
+base_url = "https://api.siliconflow.cn/v1"
+
+# ── Embedding (vectorization) ──
+[embedding]
+model = "Qwen/Qwen3-Embedding-4B"
+api_key = "<your-embedding-api-key>"
+base_url = "https://api.siliconflow.cn/v1"
+
+# ── Multimodal (optional, for PDF/image parsing) ──
+# [multimodal]
+# model = "<vision-capable-model>"
+# api_key = "<your-multimodal-api-key>"
+# base_url = "https://api.siliconflow.cn/v1"
+# max_concurrency = 4

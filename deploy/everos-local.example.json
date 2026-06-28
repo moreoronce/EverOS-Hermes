@@ -1,0 +1,8 @@
+{
+  "host": "http://127.0.0.1:8765",
+  "user_id": "<your-user-id>",
+  "agent_id": "hermes",
+  "app_id": "hermes",
+  "project_id": "default",
+  "prefetch_top_k": 5
+}
