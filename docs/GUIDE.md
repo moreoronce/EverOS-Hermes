@@ -186,6 +186,17 @@ uv run everos --help
 # 期望：显示 CLI 帮助（init / server / cascade / config 子命令）
 ```
 
+> **部署模板：** 本仓库的 `deploy/` 目录提供了全部配置文件的模板。Agent 完成安装后，应优先从模板复制再填入用户信息，而不是从零手写。
+>
+> | 模板文件 | 用途 | 复制到 | 需替换的占位符 |
+> |---------|------|--------|---------------|
+> | `deploy/everos.toml.example` | EverOS server 配置 | `~/.everos-codex/everos.toml` | `<your-llm-api-key>`、`<your-embedding-api-key>` |
+> | `deploy/everos-local.example.json` | Hermes 插件配置 | `~/.hermes/everos-local.json` | `<your-user-id>` |
+> | `deploy/everos.service` | systemd user service | `~/.config/systemd/user/everos.service` | `<username>` |
+> | `deploy/everos-codex-server` | 启动脚本 | `~/.local/bin/everos-codex-server` | 无（使用 `$HOME` 变量） |
+>
+> **占位符格式统一为 `<...>` 尖括号**——Agent 在配置阶段需将每一个替换为用户提供的信息，替换完成后确认无 `<` 字符残留。
+
 ### 3.2 初始化 Memory Root
 
 ```bash
