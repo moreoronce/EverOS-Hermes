@@ -1,6 +1,13 @@
 # EverOS ↔ Hermes
 
 > EverOS memory system integration for Hermes Agent. Local-first, markdown-backed memory that persists across sessions.
+>
+> [中文](README.zh-CN.md) | English
+
+**EverOS** is an open-source memory framework for AI agents, developed by [EverMind](https://evermind.ai).  
+**Hermes Agent** is a self-improving AI agent built by [Nous Research](https://github.com/NousResearch).
+
+This repo bridges the two: a Hermes plugin + deployment templates + a guide written for AI agents to follow.
 
 ## What's in this repo
 
@@ -30,12 +37,20 @@ Hermes (Agent)                         EverOS Sidecar
                                     └───────────────────────┘
 ```
 
+One EverOS instance can serve multiple agents simultaneously — Hermes and Codex share the same sidecar, partitioned by `app_id`.
+
 ## Requirements
 
 - **OS:** Linux / macOS / WSL2 (Windows native not supported — `fcntl.flock` POSIX dependency)
 - **Python:** 3.12+ (via `uv` venv)
 - **LLM Provider:** Any OpenAI-compatible endpoint (SiliconFlow, OpenAI, DeepSeek, etc.)
 - **Embedding Provider:** Same — needs `/v1/embeddings` support
+
+## Links
+
+- [EverOS (upstream)](https://github.com/EverMind-AI/EverOS) — the memory framework
+- [Hermes Agent](https://github.com/NousResearch/hermes-agent) — the agent harness
+- [EverOS Docs](https://docs.evermind.ai) — official documentation
 
 ## License
 
