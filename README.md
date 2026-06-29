@@ -56,6 +56,8 @@ One EverOS instance can serve multiple agents simultaneously — Hermes and Code
 
 MIT
 
+---
+
 <p align="center">
   <a href="https://x.com/moreoronce">
     <img src="https://img.shields.io/badge/X-Follow_@moreoronce-black?style=for-the-badge&logo=x&logoColor=white" height="40" alt="X @moreoronce">
