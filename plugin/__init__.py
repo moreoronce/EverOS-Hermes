@@ -375,6 +375,9 @@ class EverOSLocalProvider(MemoryProvider):
                 text = row.get("text", "").strip()
                 if len(text) <= 5:
                     continue
+                score = row.get("score")
+                if isinstance(score, (int, float)) and score < 0.15:
+                    continue
                 if len(text) > 160:
                     text = text[:157] + "..."
                 score = row.get("score")
