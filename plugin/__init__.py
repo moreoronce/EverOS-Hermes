@@ -13,11 +13,13 @@ Or via $HERMES_HOME/everos-local.json.
 from __future__ import annotations
 
 import datetime as _dt
+import hashlib
 import json
 import logging
 import os
 import threading
 import time
+from pathlib import Path
 from typing import Any, Dict, List
 
 import httpx
@@ -31,6 +33,8 @@ HERMES_HOME = get_hermes_home()
 
 _BREAKER_THRESHOLD = 6
 _BREAKER_COOLDOWN_SECS = 120
+_CONCLUDE_OUTBOX_VERSION = 1
+_CONCLUDE_DEDUPE_SECS = 24 * 60 * 60
 
 
 def _load_config() -> dict:
@@ -82,7 +86,10 @@ SEARCH_SCHEMA = {
 
 CONCLUDE_SCHEMA = {
     "name": "everos_conclude",
-    "description": "Submit one durable user fact to EverOS and force extraction.",
+    "description": (
+        "Queue one durable user fact in a private local outbox and force "
+        "EverOS extraction asynchronously. Same-day duplicate submissions are deduplicated."
+    ),
     "parameters": {
         "type": "object",
         "properties": {
@@ -146,12 +153,12 @@ class _EverOSClient:
         else:
             payload["user_id"] = self.user_id
             payload["include_profile"] = include_profile
-        return self._request("POST", "/api/v1/memory/search", payload)
+        return self._request("POST", "/api/v2/memory/search", payload)
 
     def add_messages(self, session_id: str, messages: list[dict], *, flush: bool = True) -> dict:
         added = self._request(
             "POST",
-            "/api/v1/memory/add",
+            "/api/v2/memory/add",
             {
                 "session_id": session_id,
                 "app_id": self.app_id,
@@ -164,7 +171,7 @@ class _EverOSClient:
             return {"add": added}
         flushed = self._request(
             "POST",
-            "/api/v1/memory/flush",
+            "/api/v2/memory/flush",
             {
                 "session_id": session_id,
                 "app_id": self.app_id,
@@ -185,6 +192,37 @@ def _now_ms() -> int:
 def _session_id(prefix: str) -> str:
     stamp = _dt.datetime.now(_dt.UTC).strftime("%Y%m%d%H%M%S")
     return f"{prefix}-{stamp}-{os.getpid()}"
+
+
+def _read_outbox(path: Path) -> dict:
+    if not path.exists():
+        return {"version": _CONCLUDE_OUTBOX_VERSION, "jobs": {}}
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if raw.get("version") != _CONCLUDE_OUTBOX_VERSION or not isinstance(
+        raw.get("jobs"), dict
+    ):
+        raise RuntimeError(f"Unsupported or corrupt EverOS conclude outbox: {path}")
+    return raw
+
+
+def _write_private_json(path: Path, payload: dict) -> None:
+    """Atomically replace a JSON file and force owner-only permissions."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    fd = os.open(tmp, flags, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+        os.chmod(path, 0o600)
+    finally:
+        try:
+            tmp.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def _extract_rows(response: dict) -> list[dict]:
@@ -260,6 +298,9 @@ class EverOSLocalProvider(MemoryProvider):
         self._client: _EverOSClient | None = None
         self._client_lock = threading.Lock()
         self._sync_thread: threading.Thread | None = None
+        self._conclude_lock = threading.Lock()
+        self._conclude_threads: dict[str, threading.Thread] = {}
+        self._conclude_outbox_path = HERMES_HOME / "everos-conclude-outbox.json"
         self._consecutive_failures = 0
         self._breaker_open_until = 0.0
         self._host = ""
@@ -344,6 +385,160 @@ class EverOSLocalProvider(MemoryProvider):
         if self._consecutive_failures >= _BREAKER_THRESHOLD:
             self._breaker_open_until = time.monotonic() + _BREAKER_COOLDOWN_SECS
             logger.warning("EverOS circuit breaker opened for %ds", _BREAKER_COOLDOWN_SECS)
+
+    def _conclusion_key(self, conclusion: str, explicit_session_id: str | None) -> str:
+        normalized = " ".join(conclusion.split())
+        day = _dt.datetime.now(_dt.UTC).strftime("%Y%m%d")
+        material = json.dumps(
+            [
+                self._user_id,
+                self._app_id,
+                self._project_id,
+                explicit_session_id or day,
+                normalized,
+            ],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _public_conclusion_job(job: dict) -> dict:
+        status = job["status"]
+        if status == "stored":
+            result = "Fact stored in EverOS."
+        elif status == "uncertain":
+            result = (
+                "Previous submission status is uncertain; it was not retried "
+                "because the server may already have stored it."
+            )
+        else:
+            result = "Fact queued for asynchronous EverOS extraction."
+        return {
+            "result": result,
+            "request_id": job["request_id"],
+            "session_id": job["session_id"],
+            "status": status,
+        }
+
+    def _update_conclusion_job(self, request_id: str, **changes: Any) -> dict:
+        with self._conclude_lock:
+            outbox = _read_outbox(self._conclude_outbox_path)
+            job = outbox["jobs"][request_id]
+            job.update(changes)
+            job["updated_at_ms"] = _now_ms()
+            _write_private_json(self._conclude_outbox_path, outbox)
+            return dict(job)
+
+    def _run_conclusion_job(self, request_id: str) -> None:
+        try:
+            job = self._update_conclusion_job(
+                request_id,
+                status="running",
+                attempts=1,
+                worker_pid=os.getpid(),
+            )
+            self._get_client().add_messages(
+                job["session_id"],
+                [
+                    {
+                        "sender_id": self._user_id,
+                        "sender_name": "User",
+                        "role": "user",
+                        "timestamp": job["timestamp_ms"],
+                        "content": job["conclusion"],
+                    }
+                ],
+                flush=True,
+            )
+            self._update_conclusion_job(
+                request_id,
+                status="stored",
+                completed_at_ms=_now_ms(),
+                last_error=None,
+            )
+            self._record_success()
+        except Exception as exc:
+            # Any HTTP timeout is ambiguous: the local server may have committed
+            # before the response path timed out. Never retry automatically.
+            try:
+                self._update_conclusion_job(
+                    request_id,
+                    status="uncertain",
+                    last_error=f"{type(exc).__name__}: {exc}"[:500],
+                )
+            except Exception:
+                logger.exception("Failed to persist EverOS conclude failure state")
+            self._record_failure()
+            logger.warning("EverOS conclude job %s is uncertain: %s", request_id, exc)
+        finally:
+            with self._conclude_lock:
+                self._conclude_threads.pop(request_id, None)
+
+    def _new_conclusion_worker(self, request_id: str) -> threading.Thread:
+        return threading.Thread(
+            target=self._run_conclusion_job,
+            args=(request_id,),
+            daemon=True,
+            name=f"everos-conclude-{request_id[:8]}",
+        )
+
+    def _queue_conclusion(
+        self, conclusion: str, explicit_session_id: str | None
+    ) -> dict:
+        request_id = self._conclusion_key(conclusion, explicit_session_id)
+        now = _now_ms()
+        with self._conclude_lock:
+            outbox = _read_outbox(self._conclude_outbox_path)
+            jobs = outbox["jobs"]
+            cutoff = now - (7 * _CONCLUDE_DEDUPE_SECS * 1000)
+            jobs = {
+                key: value
+                for key, value in jobs.items()
+                if int(value.get("created_at_ms", 0)) >= cutoff
+            }
+            outbox["jobs"] = jobs
+            existing = jobs.get(request_id)
+            if existing is not None:
+                worker = self._conclude_threads.get(request_id)
+                worker_active = worker is not None and worker.is_alive()
+                if existing.get("status") == "pending" and not worker_active:
+                    # No network work has begun, so recovering an orphaned
+                    # pending entry is safe and cannot duplicate a commit.
+                    worker = self._new_conclusion_worker(request_id)
+                    self._conclude_threads[request_id] = worker
+                    worker.start()
+                elif existing.get("status") == "running" and not worker_active:
+                    # A prior process/provider disappeared after network work
+                    # began. The server may have committed; never replay it.
+                    existing.update(
+                        status="uncertain",
+                        updated_at_ms=now,
+                        last_error="orphaned running job after provider restart",
+                    )
+                    _write_private_json(self._conclude_outbox_path, outbox)
+                return self._public_conclusion_job(existing)
+
+            day = _dt.datetime.now(_dt.UTC).strftime("%Y%m%d")
+            session_id = explicit_session_id or f"hermes-conclude-{day}-{request_id[:20]}"
+            job = {
+                "request_id": request_id,
+                "session_id": session_id,
+                "conclusion": conclusion,
+                "timestamp_ms": now,
+                "created_at_ms": now,
+                "updated_at_ms": now,
+                "status": "pending",
+                "attempts": 0,
+                "last_error": None,
+            }
+            jobs[request_id] = job
+            _write_private_json(self._conclude_outbox_path, outbox)
+
+            worker = self._new_conclusion_worker(request_id)
+            self._conclude_threads[request_id] = worker
+            worker.start()
+            return self._public_conclusion_job(job)
 
     def system_prompt_block(self) -> str:
         return (
@@ -496,20 +691,11 @@ class EverOSLocalProvider(MemoryProvider):
                 return tool_error("Missing required parameter: conclusion")
             try:
                 _safe_memory_text(conclusion)
-                session_id = args.get("session_id") or _session_id("hermes-conclude")
-                client.add_messages(
-                    session_id,
-                    [{
-                        "sender_id": self._user_id,
-                        "sender_name": "User",
-                        "role": "user",
-                        "timestamp": _now_ms(),
-                        "content": conclusion,
-                    }],
-                    flush=True,
+                queued = self._queue_conclusion(
+                    conclusion,
+                    args.get("session_id"),
                 )
-                self._record_success()
-                return json.dumps({"result": "Fact submitted to EverOS.", "session_id": session_id}, ensure_ascii=False)
+                return json.dumps(queued, ensure_ascii=False)
             except Exception as exc:
                 self._record_failure()
                 return tool_error(f"EverOS store failed: {exc}")
@@ -519,6 +705,9 @@ class EverOSLocalProvider(MemoryProvider):
     def shutdown(self) -> None:
         if self._sync_thread and self._sync_thread.is_alive():
             self._sync_thread.join(timeout=5.0)
+        for thread in list(self._conclude_threads.values()):
+            if thread.is_alive():
+                thread.join(timeout=1.0)
         with self._client_lock:
             if self._client:
                 self._client.close()

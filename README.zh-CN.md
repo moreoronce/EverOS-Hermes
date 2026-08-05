@@ -37,7 +37,7 @@
 Hermes (Agent)                         EverOS Sidecar
 ┌─────────────┐    HTTP/localhost    ┌──────────────────────┐
 │  everos-    │ ──────────────────► │  FastAPI :8765        │
-│  local      │   /api/v1/memory/*  │  LLM 抽取 + Embedding │
+│  local      │   /api/v2/memory/*  │  LLM 抽取 + Embedding │
 │  plugin     │ ◄────────────────── │  Cascade 索引 + OME   │
 └─────────────┘                     │                       │
                                     │  Markdown (真相源)     │

@@ -28,7 +28,7 @@ This repo bridges the two: a Hermes plugin + deployment templates + a guide writ
 Hermes (Agent)                         EverOS Sidecar
 ┌─────────────┐    HTTP/localhost    ┌──────────────────────┐
 │  everos-    │ ──────────────────► │  FastAPI :8765        │
-│  local      │   /api/v1/memory/*  │  LLM + Embedding +    │
+│  local      │   /api/v2/memory/*  │  LLM + Embedding +    │
 │  plugin     │ ◄────────────────── │  Cascade + OME        │
 └─────────────┘                     │                       │
                                     │  Markdown (truth)     │

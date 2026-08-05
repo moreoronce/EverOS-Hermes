@@ -13,7 +13,7 @@
 Hermes (Agent)                         EverOS Sidecar
 ┌─────────────┐    HTTP/localhost    ┌──────────────────────┐
 │  everos-    │ ──────────────────► │  FastAPI :8765        │
-│  local      │   /api/v1/memory/*  │  ├── LLM 抽取          │
+│  local      │   /api/v2/memory/*  │  ├── LLM 抽取          │
 │  plugin     │ ◄────────────────── │  ├── Embedding 向量化  │
 │             │   episodes/facts    │  ├── Cascade 索引同步   │
 └─────────────┘                     │  └── OME 离线记忆引擎   │
@@ -387,7 +387,7 @@ cp ~/src/everos-hermes/docs/GUIDE.md ~/.hermes/plugins/everos-local/GUIDE.md
 
 **每轮对话前自动执行。** 用当前用户消息作为 query，检索历史记忆，注入为 `<memory-context>` 块。
 
-- 检索路径：`POST /api/v1/memory/search`（hybrid 方法）
+- 检索路径：`POST /api/v2/memory/search`（hybrid 方法）
 - 注入格式：`[episode] summary... score=0.42`
 - 上限：`prefetch_top_k` 条（默认 5）
 - 带 circuit breaker（6 次连续失败后熔断 120s）
@@ -396,7 +396,7 @@ cp ~/src/everos-hermes/docs/GUIDE.md ~/.hermes/plugins/everos-local/GUIDE.md
 
 **每轮对话后自动执行。** 把 user + assistant 消息异步写入 EverOS。
 
-- 写入路径：`POST /api/v1/memory/add` → `POST /api/v1/memory/flush`
+- 写入路径：`POST /api/v2/memory/add` → `POST /api/v2/memory/flush`
 - 线程：daemon 线程，不阻塞对话
 - 消息格式：`sender_id` + `role` + `timestamp`(ms) + `content`
 - flush 触发 LLM 抽取 → 生成 episode + atomic facts + foresights
@@ -411,7 +411,7 @@ cp ~/src/everos-hermes/docs/GUIDE.md ~/.hermes/plugins/everos-local/GUIDE.md
 | `everos_health` | 排查问题时 | 检查 sidecar 连通性 |
 | `everos_search` | 需要精确检索 | 语义/关键词搜索，支持 `owner=user/agent` |
 | `everos_profile` | 需要用户画像 | 返回精简的用户偏好/特征样本 |
-| `everos_conclude` | 学到重要事实 | 主动写入一条结构化记忆（触发 LLM 抽取） |
+| `everos_conclude` | 学到重要事实 | 持久队列接收后异步触发 LLM 抽取；同日同内容去重 |
 
 **`everos_conclude` 使用时机（强制）：**
 - 查到有用信息后写回
@@ -420,7 +420,11 @@ cp ~/src/everos-hermes/docs/GUIDE.md ~/.hermes/plugins/everos-local/GUIDE.md
 - 发现并修复问题
 - 用户告知偏好或纠正了 Agent
 
-**调用方式：** `everos_conclude(conclusion="结论文字")` → 内部走 `add_messages(flush=True)`。
+**调用方式：** `everos_conclude(conclusion="结论文字")`。插件先把任务原子写入权限为 `0600` 的
+`~/.hermes/everos-conclude-outbox.json`，立即返回 `pending`，随后由 daemon 线程执行
+`add → flush`。再次提交同一 UTC 日、同一 user/app/project、同一内容时只返回原任务状态，
+不会重复写入。最终状态为 `stored`；网络 timeout 属于提交结果不确定，记为 `uncertain`，
+插件禁止自动重试，以免服务端已经提交后产生重复 memcell。
 
 ---
 
@@ -428,7 +432,7 @@ cp ~/src/everos-hermes/docs/GUIDE.md ~/.hermes/plugins/everos-local/GUIDE.md
 
 插件实际调用的三个端点。**所有 message 必须包含 `sender_id`、`role`、`timestamp`（Unix 毫秒）、`content`。**
 
-### POST /api/v1/memory/add
+### POST /api/v2/memory/add
 
 ```json
 {
@@ -447,7 +451,7 @@ cp ~/src/everos-hermes/docs/GUIDE.md ~/.hermes/plugins/everos-local/GUIDE.md
 }
 ```
 
-### POST /api/v1/memory/flush
+### POST /api/v2/memory/flush
 
 ```json
 {
@@ -459,7 +463,7 @@ cp ~/src/everos-hermes/docs/GUIDE.md ~/.hermes/plugins/everos-local/GUIDE.md
 
 返回 `{"data": {"status": "extracted"}}` 表示 LLM 抽取成功。
 
-### POST /api/v1/memory/search
+### POST /api/v2/memory/search
 
 ```json
 {
@@ -573,7 +577,9 @@ test -f ~/.hermes/everos-local.json && echo "✅ everos-local.json 存在" || ec
 
 # 6. 写入测试（在 Hermes 对话中调工具）
 # 调用: everos_conclude(conclusion="测试记忆写入")
-# 期望: {"result":"Fact submitted to EverOS."}
+# 首次期望: status=pending（立即返回，不等待 LLM）
+# 再次用相同内容调用以查询状态；期望最终 status=stored，且 request_id 不变
+# status=uncertain 时禁止盲目重试，先查 EverOS 日志/检索结果
 
 # 7. 搜索测试（在 Hermes 对话中调工具）
 # 调用: everos_search(query="测试记忆", top_k=3)
