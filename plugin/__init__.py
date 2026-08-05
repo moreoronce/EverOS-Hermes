@@ -35,6 +35,11 @@ _BREAKER_THRESHOLD = 6
 _BREAKER_COOLDOWN_SECS = 120
 _CONCLUDE_OUTBOX_VERSION = 1
 _CONCLUDE_DEDUPE_SECS = 24 * 60 * 60
+# EverOS may spend up to three 180s OpenAI-compatible attempts inside a
+# single memorize call. The core session-lock ceiling is 720s in production;
+# keep the background HTTP worker outside that boundary with one minute of
+# transport headroom. These calls never block the user-facing tool response.
+_MEMORY_WRITE_TIMEOUT_SECS = 780.0
 
 
 def _load_config() -> dict:
@@ -165,7 +170,7 @@ class _EverOSClient:
                 "project_id": self.project_id,
                 "messages": messages,
             },
-            timeout=90.0,
+            timeout=_MEMORY_WRITE_TIMEOUT_SECS,
         )
         if not flush:
             return {"add": added}
@@ -177,7 +182,7 @@ class _EverOSClient:
                 "app_id": self.app_id,
                 "project_id": self.project_id,
             },
-            timeout=90.0,
+            timeout=_MEMORY_WRITE_TIMEOUT_SECS,
         )
         return {"add": added, "flush": flushed}
 

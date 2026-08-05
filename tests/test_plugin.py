@@ -94,6 +94,8 @@ def test_client_uses_v2_memory_endpoints() -> None:
         "/api/v2/memory/add",
         "/api/v2/memory/flush",
     ]
+    assert calls[1][3] == plugin._MEMORY_WRITE_TIMEOUT_SECS
+    assert calls[2][3] == plugin._MEMORY_WRITE_TIMEOUT_SECS
 
 
 def test_conclude_is_async_private_and_deduplicated(tmp_path) -> None:

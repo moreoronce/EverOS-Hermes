@@ -426,6 +426,12 @@ cp ~/src/everos-hermes/docs/GUIDE.md ~/.hermes/plugins/everos-local/GUIDE.md
 不会重复写入。最终状态为 `stored`；网络 timeout 属于提交结果不确定，记为 `uncertain`，
 插件禁止自动重试，以免服务端已经提交后产生重复 memcell。
 
+**Deadline 必须成套配置：** 当前 LLM 单次 timeout 为 180 秒，OpenAI-compatible SDK
+最多执行 3 次请求，所以 EverOS `[memorize].session_lock_timeout_seconds` 必须设为
+720 秒；插件后台 add/flush HTTP timeout 为 780 秒，额外留出 60 秒传输余量。不要把
+插件 timeout 重新压回 90 秒，否则 add 可能已在服务端运行，worker 却会提前标记
+`uncertain`，甚至无法进入 flush。
+
 ---
 
 ## 6. API 速查
